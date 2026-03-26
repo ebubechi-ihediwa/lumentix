@@ -13,6 +13,7 @@ import { User } from '../../users/entities/user.entity';
 import { StellarService } from '../../stellar/stellar.service';
 import { AuditService } from '../../audit/audit.service';
 import { EscrowService } from '../services/escrow.service';
+import { NotificationService } from '../../notifications/notification.service';
 import { RefundResultDto } from './dto/refund-result.dto';
 
 @Injectable()
@@ -35,6 +36,7 @@ export class RefundService {
     private readonly stellarService: StellarService,
     private readonly auditService: AuditService,
     private readonly escrowService: EscrowService,
+    private readonly notificationService: NotificationService,
   ) {}
 
   // ─────────────────────────────────────────────────────────────────────────
@@ -151,7 +153,7 @@ export class RefundService {
       // 2. Resolve the user's Stellar public key
       const user = await this.usersRepository.findOne({
         where: { id: payment.userId },
-        select: ['id', 'stellarPublicKey'],
+        select: ['id', 'email', 'stellarPublicKey'],
       });
 
       if (!user) {
@@ -203,6 +205,14 @@ export class RefundService {
         `Refund issued: paymentId=${payment.id} user=${payment.userId} ` +
           `amount=${amount} ${payment.currency} txHash=${txHash}`,
       );
+
+      if (user.email) {
+        await this.notificationService.queueRefundEmail({
+          email: user.email,
+          amount,
+          refundId: payment.id,
+        });
+      }
 
       return { ...base, success: true, transactionHash: txHash };
     } catch (error: unknown) {

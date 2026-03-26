@@ -9,6 +9,7 @@ import { TicketsService } from './tickets.service';
 import { TicketsController } from './tickets.controller';
 import { PaymentsModule } from '../payments/payments.module';
 import { StellarModule } from '../stellar/stellar.module';
+import { NotificationModule } from '../notifications/notification.module';
 import { VerificationController } from './verification/verification.controller';
 
 @Module({
@@ -17,6 +18,7 @@ import { VerificationController } from './verification/verification.controller';
     TypeOrmModule.forFeature([TicketEntity, Event, User]),
     PaymentsModule,
     StellarModule,
+    NotificationModule,
   ],
   providers: [TicketsService, TicketSigningService],
   controllers: [TicketsController, VerificationController],

@@ -7,6 +7,7 @@ import { User } from '../../users/entities/user.entity';
 import { StellarModule } from '../../stellar/stellar.module';
 import { AuditModule } from '../../audit/audit.module';
 import { EscrowModule } from '../escrow.module';
+import { NotificationModule } from '../../notifications/notification.module';
 import { RefundService } from './refund.service';
 import { RefundController } from './refund.controller';
 
@@ -16,6 +17,7 @@ import { RefundController } from './refund.controller';
     StellarModule,
     AuditModule,
     EscrowModule,
+    NotificationModule,
   ],
   providers: [RefundService],
   controllers: [RefundController],
