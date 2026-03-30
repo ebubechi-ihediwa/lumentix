@@ -82,39 +82,6 @@ export class TicketsController {
     return this.ticketsService.regenerateQr(id, req.user.id);
   }
 
-  @Post(':id/list')
-  @ApiOperation({ summary: 'List a ticket for resale' })
-  @ApiResponse({ status: 201, description: 'Ticket listed' })
-  @ApiResponse({ status: 400, description: 'Ticket not valid or already listed' })
-  @ApiResponse({ status: 403, description: 'Not ticket owner' })
-  async listForSale(
-    @Param('id') id: string,
-    @Body() dto: ListTicketDto,
-    @Req() req: AuthenticatedRequest,
-  ) {
-    return this.ticketsService.listTicketForSale(id, req.user.id, dto.price, dto.currency);
-  }
-
-  @Delete(':id/list')
-  @ApiOperation({ summary: 'Cancel a ticket listing' })
-  @ApiResponse({ status: 200, description: 'Listing cancelled' })
-  @ApiResponse({ status: 403, description: 'Not ticket owner' })
-  async cancelListing(@Param('id') id: string, @Req() req: AuthenticatedRequest) {
-    return this.ticketsService.cancelListing(id, req.user.id);
-  }
-
-  @Post(':id/buy')
-  @ApiOperation({ summary: 'Buy a listed ticket' })
-  @ApiResponse({ status: 201, description: 'Ticket purchased' })
-  @ApiResponse({ status: 400, description: 'Payment validation failed' })
-  async buyTicket(
-    @Param('id') id: string,
-    @Body() dto: BuyTicketDto,
-    @Req() req: AuthenticatedRequest,
-  ) {
-    return this.ticketsService.buyTicket(id, req.user.id, dto.transactionHash);
-  }
-
   @Get(':id')
   @ApiOperation({ summary: 'Get a single ticket' })
   @ApiResponse({ status: 200, type: TicketEntity })
@@ -148,6 +115,27 @@ export class TicketsPublicController {
   getMarketplace() {
     return this.ticketsService.getMarketplace();
   }
+
+  @Get(':id/verify-status')
+  @ApiOperation({
+    summary: 'Verify ticket validity (public — no JWT required)',
+    description: 'Called by gate scanners. Validates the cryptographic signature and returns ticket status.',
+  })
+  @ApiQuery({ name: 'signature', required: true })
+  @ApiResponse({ status: 200, description: 'Ticket validity status' })
+  async verifyStatus(
+    @Param('id') id: string,
+    @Query('signature') signature: string,
+  ) {
+    return this.ticketsService.getVerifyStatus(id, signature);
+  }
+}
+
+/** Public controller — no JWT required. Used by gate scanners. */
+@ApiTags('Tickets')
+@Controller('tickets')
+export class TicketsPublicController {
+  constructor(private readonly ticketsService: TicketsService) {}
 
   @Get(':id/verify-status')
   @ApiOperation({
