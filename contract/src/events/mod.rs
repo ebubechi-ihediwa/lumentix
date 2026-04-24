@@ -192,10 +192,10 @@ impl TicketPurchased {
 pub struct TicketTransferred;
 
 impl TicketTransferred {
-    pub fn emit(env: &Env, ticket_id: u64, from: Address, to: Address, event_id: u64) {
+    pub fn emit(env: &Env, ticket_id: u64, event_id: u64, from: Address, to: Address) {
         env.events().publish(
-            (symbol_short!("tkttrans"),),
-            (ticket_id, from, to, event_id),
+            (symbol_short!("tkttrans"), ticket_id, event_id),
+            (ticket_id, event_id, from, to),
         );
     }
 }

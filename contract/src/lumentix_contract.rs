@@ -433,7 +433,7 @@ impl LumentixContract {
         storage::set_ticket(&env, ticket_id, &ticket);
 
         // Emit TicketTransferred event
-        TicketTransferred::emit(&env, ticket_id, from, to, ticket.event_id);
+        TicketTransferred::emit(&env, ticket_id, ticket.event_id, from, to);
 
         Ok(())
     }
