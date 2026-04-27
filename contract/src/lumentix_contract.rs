@@ -718,6 +718,28 @@ impl LumentixContract {
         events
     }
 
+    /// Get all events matching a specific status.
+    /// Iterates through all event IDs up to the current counter and skips missing entries safely.
+    /// Returns an empty vector if no matching events exist.
+    /// No auth required.
+    pub fn get_events_by_status(env: Env, status: EventStatus) -> Vec<Event> {
+
+        let mut events = Vec::new(&env);
+        let next_event_id = storage::get_next_event_id(&env);
+        let mut event_id: u64 = 1;
+
+        while event_id < next_event_id {
+            if let Ok(event) = storage::get_event(&env, event_id) {
+                if event.status == status {
+                    events.push_back(event);
+                }
+            }
+            event_id += 1;
+        }
+
+        events
+    }
+
     /// Get all events created by a specific organizer with a specific status.
     /// Returns an empty vector if no events match.
     /// No auth required.
