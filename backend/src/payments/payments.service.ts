@@ -1,6 +1,7 @@
 import {
   Injectable,
   BadRequestException,
+  ConflictException,
   ForbiddenException,
   NotFoundException,
 } from '@nestjs/common';
@@ -61,7 +62,7 @@ export class PaymentsService {
       throw new BadRequestException('Event is not available for purchase');
     }
     if (!event.escrowPublicKey) {
-      throw new BadRequestException('Event does not have an escrow wallet configured');
+      throw new ConflictException('Event does not have an escrow wallet configured');
     }
 
     const SUPPORTED = ['XLM', 'USDC'];

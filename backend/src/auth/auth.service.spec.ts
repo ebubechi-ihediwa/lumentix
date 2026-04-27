@@ -6,6 +6,7 @@ import { ConfigService } from '@nestjs/config';
 import { MailerService } from '../mailer/mailer.service';
 import { getRepositoryToken } from '@nestjs/typeorm';
 import { PasswordResetToken } from './entities/password-reset-token.entity';
+import { RefreshToken } from './entities/refresh-token.entity';
 import {
   UnauthorizedException,
   ConflictException,
@@ -60,6 +61,10 @@ describe('AuthService', () => {
         {
           provide: getRepositoryToken(PasswordResetToken),
           useValue: passwordResetTokenRepository,
+        },
+        {
+          provide: getRepositoryToken(RefreshToken),
+          useValue: { create: jest.fn(), save: jest.fn(), find: jest.fn() },
         },
       ],
     }).compile();
@@ -152,7 +157,8 @@ describe('AuthService', () => {
 
       const result = await authService.login(loginDto);
 
-      expect(result).toEqual({ access_token: 'token' });
+      expect(result.access_token).toBe('token');
+      expect(result).toHaveProperty('refresh_token');
       expect(usersService.findByEmail).toHaveBeenCalledWith(loginDto.email);
       expect(bcrypt.compare).toHaveBeenCalledWith(loginDto.password, 'hash');
       expect(jwtService.sign).toHaveBeenCalledWith({
