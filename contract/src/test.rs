@@ -3968,6 +3968,89 @@ fn test_transfer_ticket_double_transfer_succeeds() {
     assert_eq!(ticket.owner, third_owner);
 }
 
+#[test]
+fn test_batch_transfer_tickets_transfers_ownership_for_all_ids_together() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (_admin, client) = create_test_contract(&env);
+    let organizer = Address::generate(&env);
+    let buyer_a = Address::generate(&env);
+    let buyer_b = Address::generate(&env);
+
+    let event_id = create_and_publish_event(&env, &client, &organizer);
+    let ticket_ids = client.batch_purchase_tickets(&event_id, &5u32, &buyer_a);
+    assert_eq!(ticket_ids.len(), 5);
+
+    let mut ids = soroban_sdk::Vec::new(&env);
+    for id in ticket_ids.iter() {
+        ids.push_back(id);
+    }
+
+    client.batch_transfer_tickets(&ids, &buyer_b, &buyer_a);
+
+    for id in ticket_ids.iter() {
+        let ticket = client.get_ticket_info(&id);
+        assert_eq!(ticket.owner, buyer_b);
+    }
+}
+
+#[test]
+fn test_batch_transfer_tickets_unowned_in_batch_fails_atomically() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (_admin, client) = create_test_contract(&env);
+    let organizer = Address::generate(&env);
+    let buyer_a = Address::generate(&env);
+    let buyer_b = Address::generate(&env);
+
+    let event_id = create_and_publish_event(&env, &client, &organizer);
+    let a_tickets = client.batch_purchase_tickets(&event_id, &4u32, &buyer_a);
+    let b_ticket = client.purchase_ticket(&buyer_b, &event_id, &100i128);
+
+    let mut ids = soroban_sdk::Vec::new(&env);
+    ids.push_back(a_tickets.get(0).unwrap());
+    ids.push_back(a_tickets.get(1).unwrap());
+    ids.push_back(b_ticket);
+    ids.push_back(a_tickets.get(2).unwrap());
+    ids.push_back(a_tickets.get(3).unwrap());
+
+    let result = client.try_batch_transfer_tickets(&ids, &buyer_b, &buyer_a);
+    assert_eq!(result, Err(Ok(LumentixError::Unauthorized)));
+
+    for id in a_tickets.iter() {
+        assert_eq!(client.get_ticket_info(&id).owner, buyer_a);
+    }
+    assert_eq!(client.get_ticket_info(&b_ticket).owner, buyer_b);
+}
+
+#[test]
+fn test_batch_transfer_tickets_require_auth_once_for_sender() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let (_admin, client) = create_test_contract(&env);
+    let organizer = Address::generate(&env);
+    let buyer_a = Address::generate(&env);
+    let buyer_b = Address::generate(&env);
+
+    let event_id = create_and_publish_event(&env, &client, &organizer);
+    let ticket_ids = client.batch_purchase_tickets(&event_id, &5u32, &buyer_a);
+
+    let mut ids = soroban_sdk::Vec::new(&env);
+    for id in ticket_ids.iter() {
+        ids.push_back(id);
+    }
+
+    client.batch_transfer_tickets(&ids, &buyer_b, &buyer_a);
+
+    let auths = env.auths();
+    assert_eq!(auths.len(), 1);
+    let (addr, _) = auths.first().unwrap();
+    assert_eq!(*addr, buyer_a);
+}
+
 // ============================================================================
 // TOKEN CONFIGURATION TESTS
 // ============================================================================
