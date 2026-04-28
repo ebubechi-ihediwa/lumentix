@@ -2,9 +2,10 @@
 
 use crate::error::LumentixError;
 use crate::events::{
-    AdminChanged, EscrowReleased, EventCancelled, EventCompleted, EventCreated, EventStatusChanged,
+    AdminChanged, EscrowReleased, EventCancelled, EventCompleted, EventCreated, EventMetadataUpdated,
+    EventSalesPaused, EventSalesResumed, EventStatusChanged,
     EventUpdated, FundsDeposited, FundsWithdrawn, PlatformFeeUpdated, PlatformFeesWithdrawn, ProtocolFeeQueried,
-    TicketPurchased, TicketRefunded, TicketTransferred, TicketUsed,
+    BatchTicketsUsed, TicketPurchased, TicketRefunded, TicketTransferred, TicketUsed,
 };
 use crate::storage;
 use crate::types::{Event, EventStatus, Ticket, TicketTransferRecord, PERSISTENT_LIFETIME};
@@ -159,6 +160,61 @@ impl LumentixContract {
         Ok(())
     }
 
+    /// Update event metadata for a published event (name, description, location, times, price, capacity).
+    /// Unlike update_event (Draft-only), this allows organizers to correct metadata on live events.
+    /// Only the event organizer can call this. Validates all inputs.
+    /// Emits EventMetadataUpdated for fast UI refresh via graph indexers.
+    pub fn update_event_metadata(
+        env: Env,
+        organizer: Address,
+        event_id: u64,
+        name: String,
+        description: String,
+        location: String,
+        start_time: u64,
+        end_time: u64,
+        ticket_price: i128,
+        max_tickets: u32,
+    ) -> Result<(), LumentixError> {
+        organizer.require_auth();
+
+        let mut event = storage::get_event(&env, event_id)?;
+
+        if event.organizer != organizer {
+            return Err(LumentixError::Unauthorized);
+        }
+
+        // Only published events can have metadata updated via this path
+        if event.status != EventStatus::Published {
+            return Err(LumentixError::InvalidStatusTransition);
+        }
+
+        validation::validate_string_not_empty(&name)?;
+        validation::validate_string_not_empty(&description)?;
+        validation::validate_string_not_empty(&location)?;
+        validation::validate_positive_amount(ticket_price)?;
+        validation::validate_positive_capacity(max_tickets)?;
+        validation::validate_time_range(start_time, end_time)?;
+
+        if max_tickets < event.tickets_sold {
+            return Err(LumentixError::CapacityExceeded);
+        }
+
+        event.name = name;
+        event.description = description;
+        event.location = location;
+        event.start_time = start_time;
+        event.end_time = end_time;
+        event.ticket_price = ticket_price;
+        event.max_tickets = max_tickets;
+
+        storage::set_event(&env, event_id, &event);
+
+        EventMetadataUpdated::emit(&env, event_id, organizer, env.ledger().timestamp());
+
+        Ok(())
+    }
+
     /// Update event status with validated transitions.
     /// Only the event organizer can update the status.
     /// Valid transitions: Draft -> Published, Published -> Cancelled, Published -> Completed (after end_time).
@@ -198,7 +254,78 @@ impl LumentixContract {
         storage::set_event(&env, event_id, &event);
 
         // Emit EventStatusChanged event
-        EventStatusChanged::emit(&env, event_id, caller, old_status, new_status);
+        EventStatusChanged::emit(&env, event_id, caller.clone(), old_status.clone(), new_status.clone());
+
+        // Emit GenericEventStateTransition event for universal state transition tracking
+        GenericEventStateTransition::emit(&env, event_id, caller, old_status, new_status);
+
+        Ok(())
+    }
+
+    /// Update the maximum capacity of an event.
+    /// Can only be called by the organizer. Capacity cannot be reduced below tickets_sold.
+    pub fn set_event_capacity(
+        env: Env,
+        organizer: Address,
+        event_id: u64,
+        new_capacity: u32,
+    ) -> Result<(), LumentixError> {
+        organizer.require_auth();
+
+        let mut event = storage::get_event(&env, event_id)?;
+
+        if event.organizer != organizer {
+            return Err(LumentixError::Unauthorized);
+        }
+
+        if new_capacity < event.tickets_sold {
+            return Err(LumentixError::CapacityExceeded);
+        }
+
+        let old_capacity = event.max_tickets;
+        event.max_tickets = new_capacity;
+        storage::set_event(&env, event_id, &event);
+
+        // Emit EventCapacityChanged event
+        EventCapacityChanged::emit(&env, event_id, old_capacity, new_capacity);
+
+        Ok(())
+    }
+
+    /// Extend the end time of an event.
+    /// Only the organizer can extend the event end time.
+    /// New end time must be after the current end time.
+    /// Emits EventTimeExtended event for mobile push alerts.
+    pub fn extend_event_end_time(
+        env: Env,
+        organizer: Address,
+        event_id: u64,
+        new_end_time: u64,
+    ) -> Result<(), LumentixError> {
+        organizer.require_auth();
+
+        let mut event = storage::get_event(&env, event_id)?;
+
+        if event.organizer != organizer {
+            return Err(LumentixError::Unauthorized);
+        }
+
+        // Only published events can have end time extended
+        if event.status != EventStatus::Published {
+            return Err(LumentixError::InvalidStatusTransition);
+        }
+
+        // New end time must be after current end time
+        if new_end_time <= event.end_time {
+            return Err(LumentixError::InvalidTimeRange);
+        }
+
+        let previous_end_time = event.end_time;
+        event.end_time = new_end_time;
+        storage::set_event(&env, event_id, &event);
+
+        // Emit EventTimeExtended event
+        EventTimeExtended::emit(&env, event_id, previous_end_time, new_end_time);
 
         Ok(())
     }
@@ -270,6 +397,7 @@ impl LumentixContract {
             purchase_time: env.ledger().timestamp(),
             used: false,
             refunded: false,
+            revoked: false,
         };
 
         storage::set_ticket(&env, ticket_id, &ticket);
@@ -365,6 +493,7 @@ impl LumentixContract {
                 purchase_time,
                 used: false,
                 refunded: false,
+                revoked: false,
             };
 
             storage::set_ticket(&env, ticket_id, &ticket);
@@ -402,6 +531,9 @@ impl LumentixContract {
         event.paused = true;
         storage::set_event(&env, event_id, &event);
 
+        // Emit EventSalesPaused so front-end carts can invalidate immediately
+        EventSalesPaused::emit(&env, event_id, organizer, env.ledger().timestamp());
+
         Ok(())
     }
 
@@ -416,8 +548,12 @@ impl LumentixContract {
             return Ok(()); // Already resumed or never paused
         }
 
+        let organizer = event.organizer.clone();
         event.paused = false;
         storage::set_event(&env, event_id, &event);
+
+        // Emit EventSalesResumed so front-end carts can re-validate
+        EventSalesResumed::emit(&env, event_id, organizer, env.ledger().timestamp());
 
         Ok(())
     }
@@ -428,6 +564,10 @@ impl LumentixContract {
         caller.require_auth();
 
         let mut ticket = storage::get_ticket(&env, ticket_id)?;
+
+        if ticket.revoked {
+            return Err(LumentixError::RevokedTicket);
+        }
 
         if ticket.used {
             return Err(LumentixError::TicketAlreadyUsed);
@@ -444,6 +584,70 @@ impl LumentixContract {
 
         // Emit TicketUsed event
         TicketUsed::emit(&env, ticket_id, ticket.event_id, ticket.owner, caller);
+
+        Ok(())
+    }
+
+    /// Administratively revoke a ticket. Only the contract admin may call this.
+    /// The ticket must exist, not already be revoked, used, or refunded.
+    pub fn revoke_ticket(env: Env, admin: Address, ticket_id: u64) -> Result<(), LumentixError> {
+        admin.require_auth();
+        let stored_admin = storage::get_admin(&env);
+        if stored_admin != admin {
+            return Err(LumentixError::Unauthorized);
+        }
+        let mut ticket = storage::get_ticket(&env, ticket_id)?;
+        if ticket.revoked {
+            return Err(LumentixError::RevokedTicket);
+        }
+        if ticket.used {
+            return Err(LumentixError::TicketAlreadyUsed);
+        }
+        if ticket.refunded {
+            return Err(LumentixError::RefundNotAllowed);
+        }
+        ticket.revoked = true;
+        storage::set_ticket(&env, ticket_id, &ticket);
+        Ok(())
+    }
+
+    /// Mark multiple tickets as used in a single transaction.
+    /// Only the event organizer can use tickets. All tickets must belong to the same organizer's event.
+    pub fn batch_use_tickets(env: Env, ticket_ids: Vec<u64>, caller: Address) -> Result<(), LumentixError> {
+        caller.require_auth();
+
+        let mut by_event = Map::<u64, Vec<u64>>::new(&env);
+
+        for ticket_id in ticket_ids.iter() {
+            let mut ticket = storage::get_ticket(&env, ticket_id)?;
+
+            if ticket.revoked {
+                return Err(LumentixError::RevokedTicket);
+            }
+
+            if ticket.used {
+                return Err(LumentixError::TicketAlreadyUsed);
+            }
+
+            // Only organizer can validate tickets
+            let event = storage::get_event(&env, ticket.event_id)?;
+            if event.organizer != caller {
+                return Err(LumentixError::Unauthorized);
+            }
+
+            ticket.used = true;
+            storage::set_ticket(&env, ticket_id, &ticket);
+
+            let eid = ticket.event_id;
+            let mut ids = by_event.get(eid).unwrap_or_else(|| Vec::new(&env));
+            ids.push_back(ticket_id);
+            by_event.set(eid, ids);
+        }
+
+        for entry in by_event.iter() {
+            let (event_id, ids) = entry;
+            BatchTicketsUsed::emit(&env, event_id, ids.len(), ids);
+        }
 
         Ok(())
     }
@@ -466,6 +670,10 @@ impl LumentixContract {
         // Verify the caller is the current owner
         if ticket.owner != from {
             return Err(LumentixError::Unauthorized);
+        }
+
+        if ticket.revoked {
+            return Err(LumentixError::RevokedTicket);
         }
 
         // Verify ticket is not used
@@ -531,6 +739,10 @@ impl LumentixContract {
             return Err(LumentixError::Unauthorized);
         }
 
+        if ticket.revoked {
+            return Err(LumentixError::RevokedTicket);
+        }
+
         // Cannot refund used tickets
         if ticket.used {
             return Err(LumentixError::TicketAlreadyUsed);
@@ -574,6 +786,47 @@ impl LumentixContract {
         Ok(())
     }
 
+    /// Revoke a ticket by admin action.
+    /// Marks the ticket as refunded and used to prevent entry.
+    /// Emits TicketRevoked event for audit trail and off-chain trust graphs.
+    pub fn revoke_ticket(
+        env: Env,
+        admin: Address,
+        ticket_id: u64,
+        reason: Option<String>,
+    ) -> Result<(), LumentixError> {
+        admin.require_auth();
+
+        // Verify caller is the admin
+        let stored_admin = storage::get_admin(&env);
+        if stored_admin != admin {
+            return Err(LumentixError::Unauthorized);
+        }
+
+        let mut ticket = storage::get_ticket(&env, ticket_id)?;
+
+        // Already revoked/refunded tickets cannot be revoked again
+        if ticket.refunded {
+            return Err(LumentixError::RefundNotAllowed);
+        }
+
+        let mut event = storage::get_event(&env, ticket.event_id)?;
+
+        // Mark ticket as refunded and used to prevent entry
+        ticket.refunded = true;
+        ticket.used = true;
+        storage::set_ticket(&env, ticket_id, &ticket);
+
+        // Decrement tickets_sold to free up capacity
+        event.tickets_sold = event.tickets_sold.saturating_sub(1);
+        storage::set_event(&env, ticket.event_id, &event);
+
+        // Emit TicketRevoked event for audit trail
+        TicketRevoked::emit(&env, admin, ticket_id, ticket.event_id, reason);
+
+        Ok(())
+    }
+
     /// Cancel a published event. Only the organizer can cancel.
     pub fn cancel_event(env: Env, organizer: Address, event_id: u64) -> Result<(), LumentixError> {
         organizer.require_auth();
@@ -588,9 +841,13 @@ impl LumentixContract {
             return Err(LumentixError::InvalidStatusTransition);
         }
 
+        let old_status = event.status.clone();
         event.status = EventStatus::Cancelled;
         storage::set_event(&env, event_id, &event);
-        EventCancelled::emit(&env, event_id, organizer, event.tickets_sold);
+        EventCancelled::emit(&env, event_id, organizer.clone(), event.tickets_sold);
+
+        // Emit GenericEventStateTransition event for universal state transition tracking
+        GenericEventStateTransition::emit(&env, event_id, organizer, old_status, EventStatus::Cancelled);
 
         Ok(())
     }
@@ -618,11 +875,15 @@ impl LumentixContract {
             return Err(LumentixError::InvalidStatusTransition);
         }
 
+        let old_status = event.status.clone();
         event.status = EventStatus::Completed;
         storage::set_event(&env, event_id, &event);
 
         // Emit EventCompleted event
-        EventCompleted::emit(&env, event_id, organizer, event.tickets_sold);
+        EventCompleted::emit(&env, event_id, organizer.clone(), event.tickets_sold);
+
+        // Emit GenericEventStateTransition event for universal state transition tracking
+        GenericEventStateTransition::emit(&env, event_id, organizer, old_status, EventStatus::Completed);
 
         Ok(())
     }
@@ -842,6 +1103,10 @@ impl LumentixContract {
                 return Err(LumentixError::Unauthorized);
             }
 
+            if ticket.revoked {
+                return Err(LumentixError::RevokedTicket);
+            }
+
             // Verify ticket is not used
             if ticket.used {
                 return Err(LumentixError::TicketAlreadyUsed);
@@ -932,13 +1197,16 @@ impl LumentixContract {
     }
 
     /// Check whether a ticket is currently valid for entry.
-    /// A ticket is valid only when it exists, has not been used or refunded,
+    /// A ticket is valid only when it exists, has not been used, refunded, or revoked,
     /// and its event is still published.
     pub fn get_ticket_validity(env: Env, ticket_id: u64) -> Result<bool, LumentixError> {
         let ticket = storage::get_ticket(&env, ticket_id)?;
         let event = storage::get_event(&env, ticket.event_id)?;
 
-        Ok(!ticket.used && !ticket.refunded && event.status == EventStatus::Published)
+        Ok(!ticket.used
+            && !ticket.refunded
+            && !ticket.revoked
+            && event.status == EventStatus::Published)
     }
 
     /// Get all tickets sold for a given event.
