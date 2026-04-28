@@ -21,9 +21,16 @@ describe('AuthService', () => {
   let configService: any;
   let mailerService: any;
   let passwordResetTokenRepository: any;
+  let refreshTokenRepository: any;
 
   beforeEach(async () => {
     passwordResetTokenRepository = {
+      create: jest.fn(),
+      save: jest.fn(),
+      findOne: jest.fn(),
+    };
+
+    refreshTokenRepository = {
       create: jest.fn(),
       save: jest.fn(),
       findOne: jest.fn(),
@@ -65,6 +72,7 @@ describe('AuthService', () => {
         {
           provide: getRepositoryToken(RefreshToken),
           useValue: { create: jest.fn(), save: jest.fn(), find: jest.fn() },
+          useValue: refreshTokenRepository,
         },
       ],
     }).compile();
@@ -77,6 +85,9 @@ describe('AuthService', () => {
     // @InjectRepository uses string token in tests when manual provider is used
     passwordResetTokenRepository = module.get(
       getRepositoryToken(PasswordResetToken),
+    );
+    refreshTokenRepository = module.get(
+      getRepositoryToken(RefreshToken),
     );
   });
 
@@ -102,13 +113,16 @@ describe('AuthService', () => {
       );
     });
 
-    it('should return access token on success', async () => {
+    it('should return access token and refresh token on success', async () => {
       usersService.createUser.mockResolvedValue({ id: 'user-1', role: 'user' });
       jwtService.sign.mockReturnValue('token');
+      refreshTokenRepository.create.mockReturnValue({ id: 'uuid-1', token: 'hash' });
+      refreshTokenRepository.save.mockResolvedValue({ id: 'uuid-1', token: 'hash' });
 
       const result = await authService.register(registerDto);
 
-      expect(result).toEqual({ access_token: 'token' });
+      expect(result).toHaveProperty('accessToken', 'token');
+      expect(result).toHaveProperty('refreshToken');
       expect(usersService.createUser).toHaveBeenCalledWith({
         email: registerDto.email,
         password: registerDto.password,
@@ -146,7 +160,7 @@ describe('AuthService', () => {
       );
     });
 
-    it('should return access token on success', async () => {
+    it('should return access token and refresh token on success', async () => {
       usersService.findByEmail.mockResolvedValue({
         id: 'user-1',
         role: 'user',
@@ -154,11 +168,15 @@ describe('AuthService', () => {
       });
       jest.spyOn(bcrypt, 'compare').mockImplementation(async () => true);
       jwtService.sign.mockReturnValue('token');
+      refreshTokenRepository.create.mockReturnValue({ id: 'uuid-1', token: 'hash' });
+      refreshTokenRepository.save.mockResolvedValue({ id: 'uuid-1', token: 'hash' });
 
       const result = await authService.login(loginDto);
 
       expect(result.access_token).toBe('token');
       expect(result).toHaveProperty('refresh_token');
+      expect(result).toHaveProperty('accessToken', 'token');
+      expect(result).toHaveProperty('refreshToken');
       expect(usersService.findByEmail).toHaveBeenCalledWith(loginDto.email);
       expect(bcrypt.compare).toHaveBeenCalledWith(loginDto.password, 'hash');
       expect(jwtService.sign).toHaveBeenCalledWith({
@@ -309,6 +327,55 @@ describe('AuthService', () => {
       expect(passwordResetTokenRepository.save).toHaveBeenCalledWith(
         expect.objectContaining({ used: true }),
       );
+    });
+  });
+
+  describe('refresh', () => {
+    it('throws on invalid token format', async () => {
+      await expect(authService.refresh('invalid_format')).rejects.toThrow(UnauthorizedException);
+    });
+
+    it('throws on invalid token', async () => {
+      refreshTokenRepository.findOne.mockResolvedValue(null);
+      await expect(authService.refresh('id:secret')).rejects.toThrow(UnauthorizedException);
+    });
+
+    it('refreshes successfully', async () => {
+      const expiresAt = new Date();
+      expiresAt.setDate(expiresAt.getDate() + 1); // tomorrow
+
+      refreshTokenRepository.findOne.mockResolvedValue({
+        id: 'id',
+        token: 'hash',
+        userId: 'user-1',
+        expiresAt,
+        revoked: false,
+      });
+      jest.spyOn(bcrypt, 'compare').mockImplementation(async () => true);
+      usersService.findById.mockResolvedValue({ id: 'user-1', role: 'user' });
+      jwtService.sign.mockReturnValue('new_token');
+      refreshTokenRepository.create.mockReturnValue({ id: 'uuid-2', token: 'hash2' });
+      refreshTokenRepository.save.mockResolvedValue({ id: 'uuid-2', token: 'hash2' });
+
+      const result = await authService.refresh('id:secret');
+      expect(result).toHaveProperty('accessToken', 'new_token');
+      expect(result).toHaveProperty('refreshToken');
+    });
+  });
+
+  describe('logout', () => {
+    it('revokes the token', async () => {
+      const tokenRecord = {
+        id: 'id',
+        token: 'hash',
+        revoked: false,
+      };
+      refreshTokenRepository.findOne.mockResolvedValue(tokenRecord);
+      jest.spyOn(bcrypt, 'compare').mockImplementation(async () => true);
+
+      await authService.logout('id:secret');
+      expect(tokenRecord.revoked).toBe(true);
+      expect(refreshTokenRepository.save).toHaveBeenCalledWith(tokenRecord);
     });
   });
 });

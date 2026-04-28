@@ -1,6 +1,6 @@
 #![allow(deprecated)]
 
-use soroban_sdk::{symbol_short, Address, Env, String, Symbol};
+use soroban_sdk::{symbol_short, Address, Env, String, Symbol, Vec};
 
 /// A type for transfer of event
 pub struct TransferEvent;
@@ -212,6 +212,19 @@ impl TicketUsed {
     }
 }
 
+/// Event emitted when multiple tickets are checked in via [`crate::lumentix_contract::LumentixContract::batch_use_tickets`].
+/// Carries `event_id`, `quantity`, and the list of `ticket_ids` so indexers can update headcounts without one log line per ticket.
+pub struct BatchTicketsUsed;
+
+impl BatchTicketsUsed {
+    pub fn emit(env: &Env, event_id: u64, quantity: u32, ticket_ids: Vec<u64>) {
+        env.events().publish(
+            (symbol_short!("batchuse"),),
+            (event_id, quantity, ticket_ids),
+        );
+    }
+}
+
 /// Event emitted when a ticket is refunded
 pub struct TicketRefunded;
 
@@ -265,6 +278,109 @@ impl FundsWithdrawn {
         env.events().publish(
             (symbol_short!("withdraw"),),
             (event_id, withdrawer, amount, new_balance),
+        );
+    }
+}
+
+/// Event emitted when event metadata is updated (name, description, location, times, price, capacity).
+/// Enables front-end graph indexers to reflect changed event information dynamically without polling.
+pub struct EventMetadataUpdated;
+
+impl EventMetadataUpdated {
+    pub fn emit(env: &Env, event_id: u64, organizer: Address, time_updated: u64) {
+        env.events().publish(
+            (symbol_short!("evtmeta"),),
+            (event_id, organizer, time_updated),
+        );
+    }
+}
+
+/// Event emitted when ticket sales for an event are paused by the organizer.
+/// Informs users in real-time that an event they are purchasing has gone offline.
+pub struct EventSalesPaused;
+
+impl EventSalesPaused {
+    pub fn emit(env: &Env, event_id: u64, organizer: Address, timestamp: u64) {
+        env.events().publish(
+            (symbol_short!("salespaus"),),
+            (event_id, organizer, timestamp),
+        );
+    }
+}
+
+/// Event emitted when ticket sales for a paused event are resumed by the organizer.
+/// Restores UI cart validity for users waiting on the event.
+pub struct EventSalesResumed;
+
+impl EventSalesResumed {
+    pub fn emit(env: &Env, event_id: u64, organizer: Address, timestamp: u64) {
+        env.events().publish(
+            (symbol_short!("salesrsm"),),
+            (event_id, organizer, timestamp),
+        );
+    }
+}
+
+/// Universal event emitted anytime an EventStatus switches (e.g. Draft -> Published, Active -> Cancelled).
+/// Standardizes indexer states minimizing specific listener configuration.
+pub struct GenericEventStateTransition;
+
+impl GenericEventStateTransition {
+    pub fn emit(
+        env: &Env,
+        event_id: u64,
+        caller: Address,
+        old_status: crate::types::EventStatus,
+        new_status: crate::types::EventStatus,
+    ) {
+        env.events().publish(
+            (symbol_short!("genstsch"),),
+            (event_id, caller, old_status, new_status),
+        );
+    }
+}
+
+/// Event emitted when an event's capacity is changed.
+/// Alerts scalpers, waitlists, and potential buyers of capacity changes immediately.
+pub struct EventCapacityChanged;
+
+impl EventCapacityChanged {
+    pub fn emit(env: &Env, event_id: u64, old_capacity: u32, new_capacity: u32) {
+        env.events().publish(
+            (symbol_short!("capchng"),),
+            (event_id, old_capacity, new_capacity),
+        );
+    }
+}
+
+/// Event emitted when a ticket is revoked by an admin.
+/// Provides audit trail for admin tampering actions and builds off-chain trust graphs.
+pub struct TicketRevoked;
+
+impl TicketRevoked {
+    pub fn emit(
+        env: &Env,
+        admin_address: Address,
+        ticket_id: u64,
+        event_id: u64,
+        reason: Option<String>,
+    ) {
+        env.events().publish(
+            (symbol_short!("tktrevok"),),
+            (admin_address, ticket_id, event_id, reason),
+        );
+    }
+}
+
+/// Event emitted when an event's end time is extended.
+/// Notifies attendees of prolonged event times for mobile push alerts.
+pub struct EventTimeExtended;
+
+impl EventTimeExtended {
+    pub fn emit(env: &Env, event_id: u64, previous_end_time: u64, new_end_time: u64) {
+        env.events().publish(
+            (symbol_short!("timeext"),),
+            (event_id, previous_end_time, new_end_time),
         );
     }
 }
